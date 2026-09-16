@@ -1,0 +1,11 @@
+{
+  "name": "pi-herdr-subagents",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
