@@ -62,7 +62,7 @@ Conceptual input:
 
 | Field | Required | Meaning |
 |---|---:|---|
-| `name` | Yes | Short human-readable task label shown in Pi and Herdr. |
+| `name` | Yes | Short human-readable task label used as the child pane title and shown in Pi and Herdr. |
 | `task` | Yes | Complete assignment given to the child. |
 | `model` | Yes | Exact model selected from the advertised delegation pool. |
 | `thinking` | Yes | Child thinking level selected by the parent for this task. |
@@ -229,7 +229,7 @@ The Pi extension reports display-only pane metadata using source `pi:subagent`.
 | `delegation_model` | Parent model | Child model. |
 | `delegation_thinking` | absent | Parent-selected child thinking level. |
 
-The child `display_agent` should be set to its task label. Semantic state remains owned by the installed Herdr Pi integration.
+The child pane title and `display_agent` should be set to its task label. Semantic state remains owned by the installed Herdr Pi integration.
 
 Metadata values must respect Herdr's length and character limits. No TTL is used while the pane exists.
 

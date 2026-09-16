@@ -44,7 +44,7 @@ const TASK_SUFFIX =
 
 const SubagentParams = Type.Object(
 	{
-		name: Type.String({ minLength: 1, maxLength: 80, description: "Short task label shown in Herdr" }),
+		name: Type.String({ minLength: 1, maxLength: 80, description: "Short task label and pane title shown in Herdr" }),
 		task: Type.String({ minLength: 1, maxLength: 100_000, description: "Self-contained assignment for the child" }),
 		model: Type.String({ minLength: 1, maxLength: 256, description: "Exact selector from the delegation pool" }),
 		thinking: StringEnum(DELEGATION_THINKING_LEVELS, {
@@ -504,6 +504,8 @@ export default function (pi: ExtensionAPI) {
 						"--agent",
 						"pi",
 						"--display-agent",
+						name,
+						"--title",
 						name,
 						"--token",
 						`delegation_id=${id}`,
