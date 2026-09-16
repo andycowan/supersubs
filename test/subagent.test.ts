@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -15,12 +17,14 @@ import {
 	parseHerdrResponse,
 	resolveDelegationThinking,
 	resolveMaxConcurrency,
+	resolveMaxDepth,
 	resolveRoutingMode,
 	sessionLineCount,
 	supportedDelegationThinking,
 	sessionPathFrom,
 	splitPathsToPane,
 } from "../.pi/extensions/subagent/helpers.ts";
+import { createSupervisorChannel } from "../.pi/extensions/subagent/supervisor-channel.ts";
 
 const active = { provider: "openai", id: "gpt-6", name: "GPT-6" };
 
@@ -36,6 +40,7 @@ test("subagent config follows default, global, trusted-project precedence", () =
 			routingMode: "overhead",
 			allowCrossProvider: true,
 			maxConcurrency: 4,
+			maxDepth: 1,
 			modelHints: {},
 		});
 
@@ -45,6 +50,7 @@ test("subagent config follows default, global, trusted-project precedence", () =
 				routingMode: "cost",
 				allowCrossProvider: false,
 				maxConcurrency: 8,
+				maxDepth: 2,
 				modelHints: {
 					"openai/gpt-6": { costTier: "low", bestFor: ["bounded work"], avoidFor: ["security"] },
 					"deepseek/v4-pro": { costTier: "high" },
@@ -56,6 +62,7 @@ test("subagent config follows default, global, trusted-project precedence", () =
 			JSON.stringify({
 				allowCrossProvider: true,
 				maxConcurrency: 12,
+				maxDepth: 3,
 				modelHints: {
 					"openai/gpt-6": { avoidFor: ["architecture"] },
 					"openai/gpt-5.6": { bestFor: ["tests"] },
@@ -66,6 +73,7 @@ test("subagent config follows default, global, trusted-project precedence", () =
 			routingMode: "cost",
 			allowCrossProvider: true,
 			maxConcurrency: 12,
+			maxDepth: 3,
 			modelHints: {
 				"openai/gpt-6": { costTier: "low", bestFor: ["bounded work"], avoidFor: ["architecture"] },
 				"deepseek/v4-pro": { costTier: "high" },
@@ -76,6 +84,7 @@ test("subagent config follows default, global, trusted-project precedence", () =
 			routingMode: "cost",
 			allowCrossProvider: false,
 			maxConcurrency: 8,
+			maxDepth: 2,
 			modelHints: {
 				"openai/gpt-6": { costTier: "low", bestFor: ["bounded work"], avoidFor: ["security"] },
 				"deepseek/v4-pro": { costTier: "high" },
@@ -90,6 +99,12 @@ test("subagent config follows default, global, trusted-project precedence", () =
 		}
 		assert.equal(resolveMaxConcurrency(1), 1);
 		assert.equal(resolveMaxConcurrency(16), 16);
+		for (const value of [0, 9, 1.5, "2", null]) {
+			writeFileSync(path.join(cwd, ".pi", "subagent.json"), JSON.stringify({ maxDepth: value }));
+			assert.throws(() => loadSubagentConfig(cwd, agentDir, ".pi", true), /maxDepth must be an integer from 1 through 8/);
+		}
+		assert.equal(resolveMaxDepth(1), 1);
+		assert.equal(resolveMaxDepth(8), 8);
 		assert.throws(() => resolveRoutingMode("fast"), /must be "overhead" or "cost"/);
 	} finally {
 		rmSync(root, { recursive: true });
@@ -246,4 +261,38 @@ test("subagent columns keep the parent at half width", () => {
 test("labels are safe for Herdr metadata", () => {
 	assert.equal(cleanLabel("  Review\n\tauth\u0000  "), "Review auth");
 	assert.equal(cleanLabel("x".repeat(100)).length, 80);
+});
+
+test("supervisor channel carries child updates, questions, and parent answers", async () => {
+	const waiters: Array<(value: unknown) => void> = [];
+	const nextMessage = () => new Promise((resolve) => waiters.push(resolve));
+	const channel = await createSupervisorChannel("12345678-1234-1234-1234-123456789abc", (message) => {
+		waiters.shift()?.(message);
+	});
+	const socket = createConnection(channel.path);
+	try {
+		await once(socket, "connect");
+		const progress = nextMessage();
+		socket.write(`${JSON.stringify({ type: "progress_update", message: "Found the shared root cause." })}\n`);
+		assert.deepEqual(await progress, { type: "progress_update", message: "Found the shared root cause." });
+
+		const question = nextMessage();
+		socket.write(`${JSON.stringify({ type: "need_decision", requestId: "q1", message: "Which API?" })}\n`);
+		assert.deepEqual(await question, {
+			type: "need_decision",
+			requestId: "q1",
+			message: "Which API?",
+		});
+
+		const answer = once(socket, "data");
+		channel.send({ type: "answer", requestId: "q1", message: "Use stable." });
+		assert.deepEqual(JSON.parse(String((await answer)[0])), {
+			type: "answer",
+			requestId: "q1",
+			message: "Use stable.",
+		});
+	} finally {
+		socket.destroy();
+		await channel.close();
+	}
 });

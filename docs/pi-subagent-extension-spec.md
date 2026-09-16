@@ -16,7 +16,7 @@ The parent model writes each assignment and chooses its model. The extension enf
 3. **The parent remains the manager.** Children return results to the parent; they do not take over its conversation.
 4. **Herdr is the status authority.** The extension does not maintain a duplicate liveness state machine or Pi widget.
 5. **Pi sessions are the result authority.** Final output comes from the child session, not terminal screen scraping.
-6. **Version one is deliberately narrow.** Autonomous, single-level delegation only.
+6. **Version one is deliberately narrow.** Autonomous delegation with explicit child-count and depth ceilings only.
 
 ## 3. Goals
 
@@ -24,16 +24,19 @@ The parent model writes each assignment and chooses its model. The extension enf
 - Let the parent write a self-contained child task.
 - Let the parent choose an allowed model explicitly.
 - Support several independent subagents running concurrently.
+- Support bounded recursive delegation when `maxDepth` permits it.
 - Show every child as a normal Herdr-managed Pi agent.
 - Report parent-child metadata for the companion Herdr plugin.
-- Deliver completion, failure, and blocked notifications back into the parent Pi session.
+- Deliver completion, failure, blocked, and child progress notifications back into the parent Pi session.
+- Let the parent nudge a running child and answer a child's blocking decision request.
 - Preserve child session files for inspection after completion.
 
 ## 4. Non-goals
 
 - Static agent definitions or an agent catalogue.
-- Recursive delegation.
-- Interactive child conversations or parent-to-child resume flows.
+- Unbounded recursion or a shared tree-wide token/cost budget.
+- General session discovery, arbitrary peer messaging, mailboxes, attachments, or chat UI.
+- Resuming a completed child through the messaging channel.
 - Workflow templates such as scout → planner → worker.
 - Worktree creation or merge orchestration.
 - Supporting multiplexers other than Herdr.
@@ -68,7 +71,21 @@ Conceptual input:
 | `thinking` | Yes | Child thinking level selected by the parent for this task. |
 | `cwd` | No | Child working directory. Defaults to the parent working directory. |
 
-Every child receives a fixed built-in tool allowlist: `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`. Pi extension discovery is disabled and only the Herdr Pi integration is loaded explicitly. The child therefore receives neither `subagent` nor unrelated extension tools. Per-task tool profiles are deferred until there is evidence they are needed.
+Every child receives a fixed built-in tool allowlist: `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`, plus the extension-owned `contact_supervisor`, `subagent`, and `subagent_message` tools. Pi extension discovery is disabled; only the Herdr Pi integration, child messaging extension, and subagent extension are loaded explicitly. Children below `maxDepth` may delegate; at the limit, `subagent` and `subagent_message` are removed from the active tool set. No unrelated extension tools are loaded. Per-task tool profiles are deferred until there is evidence they are needed.
+
+### `subagent_message`
+
+Sends a live message from the parent to one running child:
+
+```ts
+{
+  id: string;
+  message: string;
+  replyTo?: string;
+}
+```
+
+`id` is the exact delegation ID returned by `subagent`. Without `replyTo`, the message is a non-blocking nudge delivered as a steer. With `replyTo`, it answers the matching blocking `need_decision` request.
 
 ### Validation
 
@@ -100,6 +117,7 @@ Project values override global values by key. Unknown fields, invalid JSON, and 
   "routingMode": "cost",
   "allowCrossProvider": true,
   "maxConcurrency": 8,
+  "maxDepth": 2,
   "modelHints": {
     "openai-codex/gpt-5.6-luna": {
       "costTier": "low",
@@ -110,7 +128,7 @@ Project values override global values by key. Unknown fields, invalid JSON, and 
 }
 ```
 
-Defaults are `routingMode: "overhead"`, `allowCrossProvider: true`, `maxConcurrency: 4`, and no `modelHints`. `maxConcurrency` must be an integer from 1 through 16. Unknown fields, invalid JSON, and invalid values are rejected.
+Defaults are `routingMode: "overhead"`, `allowCrossProvider: true`, `maxConcurrency: 4`, `maxDepth: 1`, and no `modelHints`. `maxConcurrency` must be an integer from 1 through 16 and limits concurrent direct children per parent session. `maxDepth` must be an integer from 1 through 8, with the root at depth 0. Unknown fields, invalid JSON, and invalid values are rejected.
 
 `modelHints` is optional. Its keys must be exact provider-qualified selectors in the form `provider/model` or `provider/model:thinking`; values may contain only `costTier` (`free`, `low`, `medium`, or `high`), `bestFor`, and `avoidFor`. The latter two must be arrays of non-empty strings. Hints are merged by selector and then by field: defaults, global configuration, and trusted project configuration are applied in that order, with project fields overriding global fields without discarding other fields for the same selector. Untrusted project configuration is ignored as a whole, as with the other settings.
 
@@ -178,7 +196,14 @@ A strong task normally states:
 
 The extension adds only a small operational suffix:
 
-> Work autonomously on this assignment. Stay within the granted capabilities. Your final response must report the result, supporting evidence, and any unresolved blocker in at most 800 words. Do not spawn other agents.
+> Work autonomously on this assignment. Stay within the granted capabilities. Use contact_supervisor only for a blocking decision or a meaningful plan-changing update. Delegate only when the subagent tool is available and its routing guidance says delegation is worthwhile. Your final response must report the result, supporting evidence, and any unresolved blocker in at most 800 words.
+
+`contact_supervisor` supports two reasons:
+
+- `progress_update`: sends a meaningful plan-changing discovery to the parent and returns immediately;
+- `need_decision`: sends a blocking question and waits until the parent answers it with `subagent_message.replyTo`.
+
+Routine narration and completion continue through the normal final child response.
 
 No role-specific system prompt is added. The child otherwise receives Pi's standard prompt and normal trusted project context for its working directory. Read-only intent is expressed in the task; version one does not claim to sandbox the shell.
 
@@ -197,21 +222,24 @@ Before creating a pane, the extension verifies:
 
 1. Validate the tool input and reserve a concurrency slot.
 2. Generate a unique delegation ID and Herdr-safe child agent name.
-3. Create a child pane in the parent's current tab without changing focus.
-4. Start `pi` through `herdr agent start`, passing:
+3. Open a private local socket for this parent-child relationship.
+4. Create a child pane in the parent's current tab without changing focus, passing the socket path and child identity through its environment.
+5. Start `pi` through `herdr agent start`, passing:
    - the selected model and parent-chosen thinking level;
    - the fixed child tool allowlist;
-   - child working directory;
-   - `--no-extensions` plus the explicit Herdr Pi integration;
+   - the parent's scoped delegation model pool;
+   - child working directory and inherited root/depth metadata;
+   - `--no-extensions` plus the explicit Herdr Pi integration, child messaging extension, and subagent extension;
    - a persistent child session.
-5. Read the child session path reported by Herdr.
-6. Record the current child-session entry count.
-7. Report the relationship metadata from section 9.
-8. Start `herdr agent prompt --wait` in a background watcher with the generated task.
-9. Return a launch acknowledgement to the parent model.
-10. When Herdr reports settlement, read new entries from the child Pi session.
-11. Deliver the child's final assistant response to the parent using a custom Pi message with `triggerTurn: true` and `deliverAs: "steer"`.
-12. Close the child pane and release the concurrency slot after the result is queued for the parent.
+6. Read the child session path reported by Herdr.
+7. Record the current child-session entry count.
+8. Report the relationship metadata from section 9.
+9. Start `herdr agent prompt --wait` in a background watcher with the generated task.
+10. Return a launch acknowledgement to the parent model.
+11. Relay progress updates and decision requests over the private socket while the child runs.
+12. When Herdr reports settlement, read new entries from the child Pi session.
+13. Deliver the child's final assistant response to the parent using a custom Pi message with `triggerTurn: true` and `deliverAs: "steer"`.
+14. Close the child pane and socket, then release the concurrency slot after the result is queued for the parent.
 
 If launch fails after pane creation, the extension closes only the pane it created.
 
@@ -221,13 +249,13 @@ The Pi extension reports display-only pane metadata using source `pi:subagent`.
 
 | Token | Parent value | Child value |
 |---|---|---|
-| `delegation_id` | absent | Unique delegation ID. |
-| `delegation_parent` | absent | Parent pane ID. |
-| `delegation_root` | Parent pane ID | Parent pane ID. |
-| `delegation_depth` | `0` | `1`. |
-| `delegation_label` | Parent session name or project label | Tool-call `name`. |
-| `delegation_model` | Parent model | Child model. |
-| `delegation_thinking` | absent | Parent-selected child thinking level. |
+| `delegation_id` | Existing value when the parent is delegated; absent on the root. | Unique delegation ID. |
+| `delegation_parent` | Existing value when the parent is delegated; absent on the root. | Direct parent pane ID. |
+| `delegation_root` | Root pane ID. | Inherited root pane ID. |
+| `delegation_depth` | Current parent depth. | Parent depth plus one. |
+| `delegation_label` | Existing parent label or root session/project label. | Tool-call `name`. |
+| `delegation_model` | Parent model. | Child model. |
+| `delegation_thinking` | Existing value when delegated; absent on the root. | Parent-selected child thinking level. |
 
 The child pane title and `display_agent` should be set to its task label. Semantic state remains owned by the installed Herdr Pi integration.
 
@@ -262,9 +290,18 @@ A completed result contains:
 
 Model-visible output is capped at Pi's normal tool-output limits. The complete result remains available in the child session.
 
+### Child decision request
+
+When a child calls `contact_supervisor` with `need_decision`:
+
+- send a parent steer message containing the child ID, question, and request ID;
+- keep the child tool call and watcher alive;
+- accept the answer only through `subagent_message` with the matching `replyTo`;
+- return the answer as the child tool result so work continues in the same turn.
+
 ### Blocked child
 
-When Herdr reports `blocked`:
+When Herdr independently reports `blocked`:
 
 - send one parent steer message identifying the child and pane;
 - keep the watcher alive;
@@ -287,9 +324,11 @@ The parent receives a steer message containing the error, child identifiers, and
 
 ## 11. Concurrency and workspace safety
 
-- Maximum concurrent children is configured by `maxConcurrency` and defaults to **4**.
+- Maximum concurrent direct children is configured by `maxConcurrency` and defaults to **4**.
 - `maxConcurrency` accepts only integers from **1** through **16**.
-- The limit applies per parent Pi extension instance.
+- The concurrency limit applies per parent Pi extension instance, not across the whole tree.
+- Maximum delegation depth is configured by `maxDepth`, defaults to **1**, and accepts integers from **1** through **8**.
+- The root is depth 0. Sessions at `maxDepth` have `subagent` and `subagent_message` removed from their active tools, and execution checks enforce the same boundary.
 - Independent children may run concurrently.
 - The parent is instructed not to launch overlapping writers in one checkout.
 - The extension does not infer file ownership or serialize writes in version one.
@@ -308,8 +347,10 @@ The parent receives a steer message containing the error, child identifiers, and
 
 - Project context and extensions run with the user's permissions.
 - Prompt instructions are not a sandbox.
-- Model, fixed tool allowlist, and concurrency restrictions are enforced before process launch.
-- The `subagent` tool is unavailable to children, but this is not a process sandbox: `bash` can still launch other programs.
+- Model, fixed tool allowlist, concurrency, and depth restrictions are enforced by the extension.
+- The `subagent` tool is removed at `maxDepth`, but this is not a process sandbox: `bash` can still launch other programs.
+- Each child gets a unique local socket path; Unix sockets are owner-only and are removed during cleanup.
+- The messaging channel addresses only the known parent-child relationship and provides no peer discovery.
 - `cwd` is resolved and validated before use.
 - No shell interpolation is used for task text, names, paths, or model IDs.
 - Cross-provider delegation is enabled by default and may transfer task and project data to another configured provider. Set `allowCrossProvider` to `false` to restrict delegation to the parent's provider.
@@ -341,8 +382,8 @@ Task and result bodies should not be written to additional logs because they alr
 - [ ] AC-6: The tool returns before the child task completes.
 - [ ] AC-7: Completion triggers a new parent turn without polling.
 - [ ] AC-8: Final output comes from the child Pi session.
-- [ ] AC-9: Recursive delegation is unavailable to children.
-- [ ] AC-10: More than the configured `maxConcurrency` concurrent children are rejected.
+- [ ] AC-9: Children below `maxDepth` can delegate; children at the limit cannot.
+- [ ] AC-10: More than the configured `maxConcurrency` concurrent direct children are rejected.
 - [ ] AC-11: Launch failure does not leave a newly-created empty pane.
 - [ ] AC-12: A settled child's pane closes after result delivery.
 - [ ] AC-13: Parent shutdown leaves running child panes intact.
@@ -350,14 +391,19 @@ Task and result bodies should not be written to additional logs because they alr
 - [ ] AC-15: Routing defaults to `overhead`; `routingMode: "cost"` injects cost-minimizing delegation guidance.
 - [ ] AC-16: Valid per-model hints are injected compactly, with Pi pricing taking precedence over configured cost tiers.
 - [ ] AC-17: Every launch requires a parent-selected thinking level, passes it to child Pi, and rejects levels unsupported by the model or conflicting with scoped thinking-level pins.
+- [ ] AC-18: A running child can send a non-blocking progress update to its parent.
+- [ ] AC-19: A child's blocking decision request stays alive until its parent answers the matching request ID.
+- [ ] AC-20: A parent can steer a live child with `subagent_message` without restarting it.
 
 ## 16. Deferred decisions
 
 Revisit only after the basic delegation experiment is evaluated:
 
 - per-provider delegation allowlists;
-- recursive delegation with depth and budget limits;
-- interactive resume and parent-child messaging;
+- shared tree-wide child, token, or cost budgets;
+- general peer discovery and brokered inter-session messaging;
+- durable or restart-recoverable parent-child mailboxes;
+- structured interviews and attachments;
 - per-task tool profiles;
 - worktree creation for parallel writers;
 - recovery of watchers after parent restart;

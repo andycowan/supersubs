@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import {
 	CONFIG_DIR_NAME,
 	DEFAULT_MAX_BYTES,
@@ -33,14 +34,25 @@ import {
 	sessionPathFrom,
 	type SubagentConfig,
 } from "./helpers.ts";
+import { createSupervisorChannel, type SupervisorChannel } from "./supervisor-channel.ts";
 
-const CHILD_TOOLS = "read,bash,edit,write,grep,find,ls";
+const CHILD_TOOLS = "read,bash,edit,write,grep,find,ls,contact_supervisor,subagent,subagent_message";
+const DELEGATION_TOOLS = new Set(["subagent", "subagent_message"]);
 const PANES_PER_COLUMN = 4;
 const RESULT_TYPE = "subagent-result";
 const TASK_SUFFIX =
 	"Work autonomously on this assignment. Stay within the granted capabilities. " +
-	"Your final response must report the result, supporting evidence, and any unresolved blocker in at most 800 words. " +
-	"Do not spawn other agents.";
+	"Use contact_supervisor only for a blocking decision or a meaningful plan-changing update. " +
+	"Delegate only when the subagent tool is available and its routing guidance says delegation is worthwhile. " +
+	"Your final response must report the result, supporting evidence, and any unresolved blocker in at most 800 words.";
+
+interface ActiveChild {
+	id: string;
+	name: string;
+	questions: Set<string>;
+	paneId?: string;
+	channel?: SupervisorChannel;
+}
 
 const SubagentParams = Type.Object(
 	{
@@ -111,7 +123,15 @@ function integrationPath(): string | undefined {
 		.find(existsSync);
 }
 
-function poolPrompt(ctx: any, config: SubagentConfig): string {
+function childIntercomPath(): string {
+	return fileURLToPath(new URL("./child-intercom.ts", import.meta.url));
+}
+
+function subagentExtensionPath(): string {
+	return fileURLToPath(import.meta.url);
+}
+
+function poolPrompt(ctx: any, config: SubagentConfig, currentDepth: number): string {
 	const pool = buildDelegationPool(ctx.model, ctx.thinkingLevel, ctx.scopedModels ?? [], config.allowCrossProvider);
 	const models = pool.map((entry) => formatDelegationModel(entry, config.modelHints[entry.selector])).join("\n");
 
@@ -121,6 +141,7 @@ function poolPrompt(ctx: any, config: SubagentConfig): string {
 		`Use only these exact${config.allowCrossProvider ? "" : " same-provider"} model selectors:`,
 		models || "- none",
 		"Choose the cheapest adequate model and the lowest adequate thinking level shown for that model: off/minimal for mechanical lookups; low for bounded repository analysis, routine implementation, tests, and summaries; medium/high for complex planning, architecture, security-sensitive work, ambiguous debugging, or cross-cutting reasoning.",
+		`Delegation limits: ${config.maxConcurrency} concurrent direct children; maximum depth ${config.maxDepth} (current depth ${currentDepth}).`,
 		config.routingMode === "cost"
 			? "Routing mode: minimize cost. Delegate serially only when a cheaper child can own a substantial bounded task end-to-end. Do small cohesive changes directly when they need only one investigation, edit, and verification pass."
 			: "Routing mode: minimize overhead. Delegate only when parallelism or independent expertise outweighs startup and coordination overhead.",
@@ -131,7 +152,9 @@ function poolPrompt(ctx: any, config: SubagentConfig): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	const active = new Set<string>();
+	const inheritedDepth = Number.parseInt(process.env.PI_SUBAGENT_DEPTH ?? "0", 10);
+	const currentDepth = Number.isInteger(inheritedDepth) && inheritedDepth >= 0 ? inheritedDepth : 0;
+	const active = new Map<string, ActiveChild>();
 	const columns: string[][] = [];
 	let config = DEFAULT_SUBAGENT_CONFIG;
 	let layoutQueue = Promise.resolve();
@@ -175,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	async function createChildPane(cwd: string, signal?: AbortSignal): Promise<string> {
+	async function createChildPane(cwd: string, env: Record<string, string>, signal?: AbortSignal): Promise<string> {
 		return mutateLayout(async () => {
 			const column = columns[0];
 			let targetPane = process.env.HERDR_PANE_ID!;
@@ -192,10 +215,10 @@ export default function (pi: ExtensionAPI) {
 				direction = "down";
 			}
 
-			const split = await herdr(
-				["pane", "split", targetPane, "--direction", direction, "--ratio", "0.5", "--cwd", cwd, "--no-focus"],
-				{ signal, timeout: 10_000 },
-			);
+			const args = ["pane", "split", targetPane, "--direction", direction, "--ratio", "0.5", "--cwd", cwd];
+			for (const [key, value] of Object.entries(env)) args.push("--env", `${key}=${value}`);
+			args.push("--no-focus");
+			const split = await herdr(args, { signal, timeout: 10_000 });
 			const paneId = paneIdFrom(split);
 			if (!paneId) throw new Error("Herdr did not return the child pane ID");
 
@@ -272,6 +295,7 @@ export default function (pi: ExtensionAPI) {
 		baselineLines: number;
 		startedAt: number;
 		controller: AbortController;
+		channel: SupervisorChannel;
 	}): Promise<void> {
 		const baseDetails = {
 			delegationId: child.id,
@@ -371,6 +395,7 @@ export default function (pi: ExtensionAPI) {
 			}
 		} finally {
 			if (!shuttingDown && !child.controller.signal.aborted) await closeChildPane(child.paneId);
+			await child.channel.close().catch(() => undefined);
 			active.delete(child.id);
 			watchers.delete(child.id);
 		}
@@ -378,17 +403,21 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		config = loadSubagentConfig(ctx.cwd, getAgentDir(), CONFIG_DIR_NAME, ctx.isProjectTrusted());
+		if (currentDepth >= config.maxDepth) {
+			pi.setActiveTools(pi.getActiveTools().filter((name) => !DELEGATION_TOOLS.has(name)));
+		}
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
 		if (!pi.getActiveTools().includes("subagent")) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n${poolPrompt(ctx, config)}` };
+		return { systemPrompt: `${event.systemPrompt}\n\n${poolPrompt(ctx, config, currentDepth)}` };
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async () => {
 		shuttingDown = true;
 		for (const controller of watchers.values()) controller.abort();
 		watchers.clear();
+		await Promise.all([...active.values()].map((child) => child.channel?.close().catch(() => undefined)));
 		active.clear();
 		columns.length = 0;
 	});
@@ -406,6 +435,9 @@ export default function (pi: ExtensionAPI) {
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (currentDepth >= config.maxDepth) {
+				throw new Error(`Maximum subagent depth ${config.maxDepth} reached`);
+			}
 			if (
 				process.env.HERDR_ENV !== "1" ||
 				!process.env.HERDR_WORKSPACE_ID ||
@@ -429,7 +461,8 @@ export default function (pi: ExtensionAPI) {
 
 			if (active.size >= config.maxConcurrency) throw new Error(`At most ${config.maxConcurrency} subagents may run concurrently`);
 			const id = randomUUID();
-			active.add(id);
+			const child: ActiveChild = { id, name, questions: new Set() };
+			active.set(id, child);
 
 			let paneId: string | undefined;
 			try {
@@ -437,7 +470,35 @@ export default function (pi: ExtensionAPI) {
 				const integration = integrationPath();
 				if (!integration) throw new Error("Herdr's Pi integration was not found; run `herdr integration install pi`");
 
-				paneId = await createChildPane(cwd, signal);
+				const channel = await createSupervisorChannel(id, (message) => {
+					if (message.type === "progress_update") {
+						sendParent(`Subagent "${name}" sent a progress update.\n\n${message.message}`, {
+							delegationId: id,
+							name,
+							status: "progress_update",
+						});
+						return;
+					}
+					child.questions.add(message.requestId);
+					sendParent(
+						`Subagent "${name}" needs a decision.\n\n${message.message}\n\nReply with subagent_message({ id: "${id}", replyTo: "${message.requestId}", message: "..." }).`,
+						{ delegationId: id, name, requestId: message.requestId, status: "needs_decision" },
+					);
+				});
+				child.channel = channel;
+				const childDepth = currentDepth + 1;
+				const delegationRoot = process.env.PI_SUBAGENT_ROOT_PANE || process.env.HERDR_PANE_ID!;
+				paneId = await createChildPane(
+					cwd,
+					{
+						PI_SUBAGENT_CHANNEL: channel.path,
+						PI_SUBAGENT_NAME: name,
+						PI_SUBAGENT_DEPTH: String(childDepth),
+						PI_SUBAGENT_ROOT_PANE: delegationRoot,
+					},
+					signal,
+				);
+				child.paneId = paneId;
 
 				const childAgentName = `subagent-${id.slice(0, 8)}`;
 				const started = await startAgent(
@@ -454,6 +515,8 @@ export default function (pi: ExtensionAPI) {
 						"--",
 						"--model",
 						params.model,
+						"--models",
+						pool.map(({ selector }) => selector).join(","),
 						"--thinking",
 						thinking,
 						"--tools",
@@ -461,6 +524,10 @@ export default function (pi: ExtensionAPI) {
 						"--no-extensions",
 						"--extension",
 						integration,
+						"--extension",
+						childIntercomPath(),
+						"--extension",
+						subagentExtensionPath(),
 					],
 					signal,
 				);
@@ -474,26 +541,28 @@ export default function (pi: ExtensionAPI) {
 				const parentPane = process.env.HERDR_PANE_ID;
 				const parentLabel = cleanLabel(pi.getSessionName() || path.basename(ctx.cwd));
 				const parentModel = cleanLabel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown");
-				await herdr(
-					[
-						"pane",
-						"report-metadata",
-						parentPane,
-						"--source",
-						"pi:subagent",
-						"--agent",
-						"pi",
-						"--token",
-						`delegation_root=${parentPane}`,
-						"--token",
-						"delegation_depth=0",
-						"--token",
-						`delegation_label=${parentLabel}`,
-						"--token",
-						`delegation_model=${parentModel}`,
-					],
-					{ signal, timeout: 5000 },
-				);
+				if (currentDepth === 0) {
+					await herdr(
+						[
+							"pane",
+							"report-metadata",
+							parentPane,
+							"--source",
+							"pi:subagent",
+							"--agent",
+							"pi",
+							"--token",
+							`delegation_root=${delegationRoot}`,
+							"--token",
+							"delegation_depth=0",
+							"--token",
+							`delegation_label=${parentLabel}`,
+							"--token",
+							`delegation_model=${parentModel}`,
+						],
+						{ signal, timeout: 5000 },
+					);
+				}
 				await herdr(
 					[
 						"pane",
@@ -512,9 +581,9 @@ export default function (pi: ExtensionAPI) {
 						"--token",
 						`delegation_parent=${parentPane}`,
 						"--token",
-						`delegation_root=${parentPane}`,
+						`delegation_root=${delegationRoot}`,
 						"--token",
-						"delegation_depth=1",
+						`delegation_depth=${childDepth}`,
 						"--token",
 						`delegation_label=${name}`,
 						"--token",
@@ -538,22 +607,67 @@ export default function (pi: ExtensionAPI) {
 					baselineLines,
 					startedAt: Date.now(),
 					controller,
+					channel,
 				});
 
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Started subagent "${name}" in Herdr pane ${paneId} with ${params.model} at ${thinking} thinking. Completion will arrive automatically. Do not poll or duplicate its assignment; continue only disjoint work, otherwise end this turn.`,
+							text: `Started subagent "${name}" at depth ${childDepth} in Herdr pane ${paneId} with ${params.model} at ${thinking} thinking. Completion will arrive automatically. Do not poll or duplicate its assignment; continue only disjoint work, otherwise end this turn.`,
 						},
 					],
-					details: { delegationId: id, name, paneId, model: params.model, thinking, sessionPath, status: "started" },
+					details: { delegationId: id, name, paneId, model: params.model, thinking, depth: childDepth, sessionPath, status: "started" },
 				};
 			} catch (error) {
 				active.delete(id);
+				await child.channel?.close().catch(() => undefined);
 				if (paneId) await closeChildPane(paneId);
 				throw error;
 			}
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_message",
+		label: "Message Subagent",
+		description:
+			"Send a live message to one of this session's running subagents. Omit replyTo for a non-blocking nudge. Include the request ID from a needs-decision message to answer that blocking question.",
+		promptSnippet: "Send a nudge or decision reply to a running child subagent",
+		promptGuidelines: [
+			"Use subagent_message only for new guidance or to answer a child's blocking decision request; do not duplicate its original assignment.",
+		],
+		parameters: Type.Object(
+			{
+				id: Type.String({ minLength: 1, description: "Exact delegation ID returned by subagent" }),
+				message: Type.String({ minLength: 1, maxLength: 20_000 }),
+				replyTo: Type.Optional(Type.String({ minLength: 1, description: "Request ID from a needs-decision message" })),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_toolCallId, params) {
+			const child = active.get(params.id);
+			if (!child?.channel) throw new Error(`No running subagent with delegation ID ${params.id}`);
+			const message = params.message.trim();
+			if (!message) throw new Error("Message must contain visible characters");
+
+			if (params.replyTo) {
+				if (!child.questions.has(params.replyTo)) {
+					throw new Error(`Subagent ${child.name} has no pending question ${params.replyTo}`);
+				}
+				child.channel.send({ type: "answer", requestId: params.replyTo, message });
+				child.questions.delete(params.replyTo);
+				return {
+					content: [{ type: "text", text: `Answered subagent "${child.name}".` }],
+					details: { delegationId: child.id, requestId: params.replyTo, status: "answered" },
+				};
+			}
+
+			child.channel.send({ type: "message", message });
+			return {
+				content: [{ type: "text", text: `Message sent to subagent "${child.name}".` }],
+				details: { delegationId: child.id, status: "sent" },
+			};
 		},
 	});
 }

@@ -36,6 +36,7 @@ export interface SubagentConfig {
 	routingMode: RoutingMode;
 	allowCrossProvider: boolean;
 	maxConcurrency: number;
+	maxDepth: number;
 	modelHints: Record<string, ModelRoutingHint>;
 }
 
@@ -43,6 +44,7 @@ export const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
 	routingMode: "overhead",
 	allowCrossProvider: true,
 	maxConcurrency: 4,
+	maxDepth: 1,
 	modelHints: {},
 };
 
@@ -54,6 +56,11 @@ export function resolveRoutingMode(value: unknown): RoutingMode {
 export function resolveMaxConcurrency(value: unknown): number {
 	if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 16) return value;
 	throw new Error(`maxConcurrency must be an integer from 1 through 16, got ${JSON.stringify(value)}`);
+}
+
+export function resolveMaxDepth(value: unknown): number {
+	if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 8) return value;
+	throw new Error(`maxDepth must be an integer from 1 through 8, got ${JSON.stringify(value)}`);
 }
 
 const MODEL_SELECTOR = /^[^/\s:]+\/[^/\s:]+(?::[^/\s:]+)?$/;
@@ -108,7 +115,12 @@ function readConfig(file: string): Partial<SubagentConfig> {
 
 	const input = value as Record<string, unknown>;
 	const unknown = Object.keys(input).filter(
-		(key) => key !== "routingMode" && key !== "allowCrossProvider" && key !== "maxConcurrency" && key !== "modelHints",
+		(key) =>
+			key !== "routingMode" &&
+			key !== "allowCrossProvider" &&
+			key !== "maxConcurrency" &&
+			key !== "maxDepth" &&
+			key !== "modelHints",
 	);
 	if (unknown.length) throw new Error(`Invalid subagent config ${file}: unknown field ${unknown.join(", ")}`);
 	if (input.allowCrossProvider !== undefined && typeof input.allowCrossProvider !== "boolean") {
@@ -119,6 +131,7 @@ function readConfig(file: string): Partial<SubagentConfig> {
 		...(input.routingMode === undefined ? {} : { routingMode: resolveRoutingMode(input.routingMode) }),
 		...(input.allowCrossProvider === undefined ? {} : { allowCrossProvider: input.allowCrossProvider }),
 		...(input.maxConcurrency === undefined ? {} : { maxConcurrency: resolveMaxConcurrency(input.maxConcurrency) }),
+		...(input.maxDepth === undefined ? {} : { maxDepth: resolveMaxDepth(input.maxDepth) }),
 		...(input.modelHints === undefined ? {} : { modelHints: resolveModelHints(input.modelHints, file) }),
 	};
 }
