@@ -1,11 +1,28 @@
 {
-  "name": "supersubs",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "node --test test/*.test.ts"
-  },
-  "engines": {
-    "node": ">=22.18"
-  }
+	"name": "supersubs",
+	"version": "0.1.0",
+	"description": "Pi extension for delegating work to autonomous subagents in Herdr panes",
+	"keywords": ["pi-package"],
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/andycowan/supersubs.git"
+	},
+	"private": false,
+	"type": "module",
+	"pi": {
+		"extensions": [".pi/extensions/subagent"]
+	},
+	"files": [".pi/extensions/subagent/"],
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-ai": "*",
+		"typebox": "*"
+	},
+	"scripts": {
+		"test": "node --test test/*.test.ts"
+	},
+	"engines": {
+		"node": ">=22.18"
+	}
 }
