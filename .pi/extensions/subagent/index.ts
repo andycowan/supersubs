@@ -157,6 +157,7 @@ export default function (pi: ExtensionAPI) {
 	const inheritedDepth = Number.parseInt(process.env.PI_SUBAGENT_DEPTH ?? "0", 10);
 	const currentDepth = Number.isInteger(inheritedDepth) && inheritedDepth >= 0 ? inheritedDepth : 0;
 	const active = new Map<string, ActiveChild>();
+	let childSpawnCount = 0; // Sibling index for delegation_path tokens.
 	const columns: string[][] = [];
 	let config = DEFAULT_SUBAGENT_CONFIG;
 	let layoutQueue = Promise.resolve();
@@ -489,6 +490,7 @@ export default function (pi: ExtensionAPI) {
 				});
 				child.channel = channel;
 				const childDepth = currentDepth + 1;
+				const childPath = nextDelegationPath(process.env.PI_SUBAGENT_PATH, childSpawnCount++);
 				const delegationRoot = process.env.PI_SUBAGENT_ROOT_PANE || process.env.HERDR_PANE_ID!;
 				paneId = await createChildPane(
 					cwd,
@@ -496,6 +498,7 @@ export default function (pi: ExtensionAPI) {
 						PI_SUBAGENT_CHANNEL: channel.path,
 						PI_SUBAGENT_NAME: name,
 						PI_SUBAGENT_DEPTH: String(childDepth),
+						PI_SUBAGENT_PATH: childPath,
 						PI_SUBAGENT_ROOT_PANE: delegationRoot,
 					},
 					signal,
