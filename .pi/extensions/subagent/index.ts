@@ -490,7 +490,7 @@ export default function (pi: ExtensionAPI) {
 				});
 				child.channel = channel;
 				const childDepth = currentDepth + 1;
-				const childPath = nextDelegationPath(process.env.PI_SUBAGENT_PATH, childSpawnCount++);
+				const childPath = nextDelegationPath(process.env.PI_SUBAGENT_PATH ?? "1", childSpawnCount++);
 				const delegationRoot = process.env.PI_SUBAGENT_ROOT_PANE || process.env.HERDR_PANE_ID!;
 				paneId = await createChildPane(
 					cwd,
