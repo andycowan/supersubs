@@ -9,10 +9,12 @@ platforms = ["macos", "linux"]
 id = "open-tree"
 title = "Open delegation tree"
 contexts = ["pane", "workspace"]
-command = ["herdr", "plugin", "pane", "open", "--plugin", "subagents.tree", "--entrypoint", "tree", "--placement", "overlay", "--focus"]
+# Herdr spawns action/pane commands with a scrubbed environment (no user PATH).
+# HERDR_BIN_PATH is injected, so route through it via /bin/sh instead of bare "herdr".
+command = ["/bin/sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin subagents.tree --entrypoint tree --placement overlay --focus"]
 
 [[panes]]
 id = "tree"
 title = "Delegation tree"
 placement = "overlay"
-command = ["node", "index.ts"]
+command = ["/bin/sh", "-c", "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\" exec node index.ts"]
