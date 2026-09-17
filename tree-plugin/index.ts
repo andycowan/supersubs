@@ -271,6 +271,23 @@ async function main(): Promise<void> {
 		if (key === "q" || key === "\x1b" || key === "\x03") return shutdown(0);
 		if (key === "j" || key === "\x1b[B") return move(1);
 		if (key === "k" || key === "\x1b[A") return move(-1);
+		if (key === "v" && client) {
+			// Flat projection of Herdr's built-in Agents view: delegation participants only,
+			// sorted by the DFS-order token the extension reports. Cosmetic; see spec §16.
+			client
+				.request("agent.view.set", {
+					source: "subagents.tree",
+					label: "delegation tree",
+					filter: { op: "exists", field: { token: "delegation_root" } },
+					sort: [{ field: { token: "delegation_path" }, order: "asc" }],
+				})
+				.catch(() => undefined);
+			return;
+		}
+		if (key === "V" && client) {
+			client.request("agent.view.clear", { source: "subagents.tree" }).catch(() => undefined);
+			return;
+		}
 		if (key === "r") {
 			reconnect(0);
 			return;

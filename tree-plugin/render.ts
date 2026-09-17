@@ -81,7 +81,7 @@ export function renderFrame(rows: Array<[string, string]>, title: string, state:
 	if (rows.length === 0) lines.push(` ${DIM}No delegation trees in scope.${RESET}`);
 	while (lines.length < inner) lines.push("");
 
-	const hints = `${DIM}j/k move · h/l collapse · space toggle · enter focus · r refresh · q close${RESET}`;
+	const hints = `${DIM}j/k move · h/l collapse · space toggle · enter focus · v agent-view · r refresh · q close${RESET}`;
 	lines.push(hints.slice(0, width));
 
 	return `\x1b[H\x1b[2J${lines.join("\r\n")}`;

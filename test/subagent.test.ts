@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+	delegationDisplayLabel,
 	agentStatusFrom,
 	buildDelegationPool,
 	cleanLabel,
@@ -13,6 +14,7 @@ import {
 	extractAssistantResult,
 	formatDelegationModel,
 	loadSubagentConfig,
+	nextDelegationPath,
 	paneIdFrom,
 	parseHerdrResponse,
 	resolveDelegationThinking,
@@ -27,6 +29,22 @@ import {
 import { createSupervisorChannel } from "../.pi/extensions/subagent/supervisor-channel.ts";
 
 const active = { provider: "openai", id: "gpt-6", name: "GPT-6" };
+
+test("delegation paths encode DFS order for lexicographic sorting", () => {
+	assert.equal(nextDelegationPath(undefined, 0), "1");
+	assert.equal(nextDelegationPath("1", 0), "1.01");
+	assert.equal(nextDelegationPath("1", 11), "1.12");
+	assert.equal(nextDelegationPath("1.01", 0), "1.01.01");
+	const paths = [nextDelegationPath("1", 1), nextDelegationPath("1", 0), nextDelegationPath(undefined, 0)];
+	assert.deepEqual([...paths].sort(), ["1", "1.01", "1.02"]);
+});
+
+test("display labels indent by depth and respect the 80-char cap", () => {
+	assert.equal(delegationDisplayLabel("Main task", 0), "Main task");
+	assert.equal(delegationDisplayLabel("sleep", 1), "└─ sleep");
+	assert.equal(delegationDisplayLabel("deep", 2), "· └─ deep");
+	assert.equal(delegationDisplayLabel("x".repeat(90), 1).length, 80);
+});
 
 test("subagent config follows default, global, trusted-project precedence", () => {
 	const root = mkdtempSync(path.join(tmpdir(), "subagent-config-"));

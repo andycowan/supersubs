@@ -221,6 +221,18 @@ export function cleanLabel(value: string): string {
 	return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
+/** Dot path encoding DFS order ("1", "1.01", "1.02.01") so a lexicographic token sort yields tree order. */
+export function nextDelegationPath(parentPath: string | undefined, siblingIndex: number): string {
+	const suffix = String(siblingIndex + 1).padStart(2, "0");
+	return parentPath ? `${parentPath}.${suffix}` : "1";
+}
+
+/** Tree-glyph display label for Herdr's built-in Agents view; caps at the 80-char metadata limit. */
+export function delegationDisplayLabel(label: string, depth: number): string {
+	const prefixed = depth > 0 ? `${"· ".repeat(depth - 1)}└─ ${label}` : label;
+	return prefixed.slice(0, 80);
+}
+
 export type HerdrLayoutNode =
 	| { type: "pane"; pane_id?: string }
 	| { type: "split"; first: HerdrLayoutNode; second: HerdrLayoutNode };
