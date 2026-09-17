@@ -1,4 +1,4 @@
-// Impure shell: socket I/O, event pump, raw keyboard, redraw loop.
+// Impure shell: socket I/O, snapshot polling, raw keyboard, redraw loop.
 import { createConnection, type Socket } from "node:net";
 import {
 	buildTree,
@@ -14,16 +14,17 @@ interface SocketClient {
 	close(): void;
 }
 
-function connectSocket(onEvent: (event: any) => void): SocketClient {
+function connectSocket(): SocketClient {
 	const socketPath = process.env.HERDR_SOCKET_PATH;
 	if (!socketPath) throw new Error("HERDR_SOCKET_PATH is not set");
 
-	let socket: Socket | undefined;
+	const socket: Socket = createConnection(socketPath);
+	socket.setEncoding("utf8");
 	let nextId = 0;
 	const pending = new Map<string, { resolve(value: any): void; reject(error: Error): void }>();
 	let buffer = "";
 
-	function handleData(chunk: Buffer): void {
+	socket.on("data", (chunk) => {
 		buffer += chunk.toString("utf8");
 		for (;;) {
 			const newline = buffer.indexOf("\n");
@@ -41,22 +42,16 @@ function connectSocket(onEvent: (event: any) => void): SocketClient {
 				pending.delete(message.id);
 				if (message.error) waiter.reject(new Error(`${message.error.code ?? "herdr_error"}: ${message.error.message ?? ""}`));
 				else waiter.resolve(message.result);
-			} else if (message.event) {
-				onEvent(message.event);
 			}
 		}
-	}
-
-	socket = createConnection(socketPath);
-	socket.setEncoding("utf8");
-	socket.on("data", handleData);
+	});
 
 	return {
 		request(method, params) {
 			return new Promise((resolve, reject) => {
 				const id = `req-${nextId++}`;
 				pending.set(id, { resolve, reject });
-				socket!.write(`${JSON.stringify({ id, method, params })}\n`);
+				socket.write(`${JSON.stringify({ id, method, params })}\n`);
 			});
 		},
 		close() {
@@ -83,17 +78,8 @@ function recordFromPane(pane: any, order: number): PaneRecord {
 	};
 }
 
-function inputsFromSnapshot(snapshot: any): NodeInput[] {
-	const order = new Map<string, number>();
-	for (const [index, pane] of (snapshot.panes ?? []).entries()) order.set(pane.pane_id, index);
-	return (snapshot.agents ?? []).map((agent: any, index: number) => ({
-		pane_id: agent.pane_id,
-		workspace_id: agent.workspace_id,
-		status: agent.agent_status ?? null,
-		label: agent.display_agent ?? agent.name ?? agent.title ?? null,
-		order: order.get(agent.pane_id) ?? (snapshot.panes?.length ?? 0) + index,
-		tokens: agent.tokens ?? {},
-	}));
+function inputsFromTreeUi(records: Map<string, PaneRecord>): NodeInput[] {
+	return [...records.entries()].map(([paneId, record]) => ({ pane_id: paneId, ...record }));
 }
 
 class TreeUi {
@@ -113,41 +99,20 @@ class TreeUi {
 
 	applySnapshot(snapshot: any): void {
 		this.workspaceLabels = new Map((snapshot.workspaces ?? []).map((workspace: any) => [workspace.workspace_id, workspace.label]));
-		this.records = new Map((snapshot.agents ?? []).map((agent: any) => [agent.pane_id, recordFromPane(agent, 0)]));
-		const inputs = inputsFromSnapshot(snapshot);
-		const orderMap = new Map(inputs.map((input) => [input.pane_id, input.order]));
-		for (const [paneId, record] of this.records) record.order = orderMap.get(paneId) ?? record.order;
+		const order = new Map<string, number>();
+		for (const [index, pane] of (snapshot.panes ?? []).entries()) order.set(pane.pane_id, index);
+		this.records = new Map(
+			(snapshot.agents ?? []).map((agent: any, index: number) => [
+				agent.pane_id,
+				recordFromPane(agent, order.get(agent.pane_id) ?? (snapshot.panes?.length ?? 0) + index),
+			]),
+		);
 		this.rebuild();
 		this.connected = true;
 	}
 
-	handleEvent(event: any): void {
-		const type: string = event.type ?? "";
-		if (type === "pane_closed" || type === "pane_exited") {
-			this.records.delete(event.pane_id);
-		} else if (type === "pane_created" || type === "pane_updated" || type === "pane_moved") {
-			if (type === "pane_moved" && event.previous_pane_id) this.records.delete(event.previous_pane_id);
-			const pane = event.pane;
-			if (pane?.pane_id && (pane.agent || pane.agent_status || pane.tokens?.delegation_root)) {
-				// pane.updated fires for title churn too; keep every pane so parents can be found.
-				this.records.set(pane.pane_id, recordFromPane(pane, this.records.get(pane.pane_id)?.order ?? this.records.size));
-			}
-		} else if (type === "pane_agent_status_changed") {
-			const record = this.records.get(event.pane_id);
-			if (record) {
-				record.status = event.agent_status;
-				record.label = event.display_agent ?? record.label;
-			}
-		} else if (type === "workspace_metadata_updated" || type === "workspace_renamed") {
-			// Workspace labels only matter cosmetically; refresh happens on the next snapshot.
-		} else {
-			return;
-		}
-		this.rebuild();
-	}
-
 	rebuild(): void {
-		this.tree = buildTree([...this.records.entries()].map(([paneId, record]) => ({ pane_id: paneId, ...record })));
+		this.tree = buildTree(inputsFromTreeUi(this.records));
 	}
 
 	scope(): TreeNode[] {
@@ -172,68 +137,42 @@ class TreeUi {
 		process.stdout.write(renderFrame(rows, title, this, process.stdout.rows ?? 24, process.stdout.columns ?? 80));
 	}
 
-	/** Expand/collapse state survives rebuilds because pane IDs are stable. */
 	toggleExpand(paneId: string): void {
 		if (this.expanded.has(paneId)) this.expanded.delete(paneId);
 		else this.expanded.add(paneId);
 	}
 }
 
+function stateKey(ui: TreeUi): string {
+	return JSON.stringify({
+		records: [...ui.records.entries()],
+		labels: [...ui.workspaceLabels.entries()],
+		connected: ui.connected,
+	});
+}
+
 async function main(): Promise<void> {
 	const context = process.env.HERDR_PLUGIN_CONTEXT_JSON ? JSON.parse(process.env.HERDR_PLUGIN_CONTEXT_JSON) : undefined;
 	const ui = new TreeUi(context);
 	let client: SocketClient | undefined;
-	let redrawTimer: NodeJS.Timeout | undefined;
 	let closing = false;
-
-	function scheduleRedraw(): void {
-		if (redrawTimer) return;
-		redrawTimer = setTimeout(() => {
-			redrawTimer = undefined;
-			if (!closing) ui.draw();
-		}, 100);
-	}
 
 	function reconnect(backoffMs: number): void {
 		if (closing) return;
 		ui.connected = false;
-		scheduleRedraw();
-		setTimeout(async () => {
-			try {
-				await start(backoffMs * 2 > 5_000 ? 5_000 : backoffMs * 2);
-			} catch {
-				reconnect(backoffMs * 2 > 5_000 ? 5_000 : backoffMs * 2);
-			}
+		ui.draw();
+		setTimeout(() => {
+			start().catch(() => reconnect(Math.min(backoffMs * 2, 5_000)));
 		}, backoffMs);
 	}
 
+	// ponytail: 2s snapshot polling instead of event subscription — Herdr 0.8.2 rejects
+	// global pane.agent_status_changed subscriptions (requires pane_id), so a live event
+	// pump is not viable yet. Switch to events.subscribe when that constraint lifts.
 	async function start(): Promise<void> {
 		client?.close();
-		// ponytail: reconnect loop keyed off request failures only; no heartbeat until Herdr needs one.
-		client = await new Promise<SocketClient>((resolve, reject) => {
-			try {
-				const instance = connectSocket((event) => {
-					ui.handleEvent(event);
-					scheduleRedraw();
-				});
-				instance.request("events.subscribe", {
-					subscriptions: [
-						{ type: "pane.created" },
-						{ type: "pane.closed" },
-						{ type: "pane.updated" },
-						{ type: "pane.moved" },
-						{ type: "pane.exited" },
-						{ type: "pane.agent_detected" },
-						{ type: "pane.agent_status_changed" },
-						{ type: "workspace.closed" },
-					],
-				}).then(() => resolve(instance), reject);
-			} catch (error) {
-				reject(error);
-			}
-		});
-		const snapshot = await client.request("session.snapshot", {});
-		ui.applySnapshot(snapshot);
+		client = connectSocket();
+		ui.applySnapshot(await client.request("session.snapshot", {}));
 		ui.draw();
 	}
 
@@ -251,6 +190,19 @@ async function main(): Promise<void> {
 
 	process.on("SIGINT", () => shutdown(130));
 	process.on("SIGTERM", () => shutdown(143));
+
+	const poll = setInterval(async () => {
+		if (closing || !client) return;
+		try {
+			const before = stateKey(ui);
+			ui.applySnapshot(await client.request("session.snapshot", {}));
+			if (stateKey(ui) !== before) ui.draw();
+		} catch {
+			clearInterval(poll);
+			reconnect(500);
+		}
+	}, 2_000);
+
 	process.stdin.on("data", (data: Buffer) => {
 		const key = data.toString("utf8");
 		const rows = renderTree(ui.scope(), ui.tree.unattached, ui.workspaceLabels, ui.scope()[0]?.workspace_id, {
@@ -320,7 +272,7 @@ async function main(): Promise<void> {
 		reconnect(500);
 	}
 
-	// Keep the process alive: stdin is resumed, redraws are event-driven.
+	// Keep the process alive: stdin is resumed, redraws are poll-driven.
 	setInterval(() => {}, 1 << 30);
 }
 
