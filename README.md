@@ -2,6 +2,10 @@
 
 The subagent extension is configured with `subagent.json`.
 
+A companion Herdr plugin (`tree-plugin/`) renders live delegation trees from the
+metadata the extension reports. Link it with `herdr plugin link tree-plugin` and
+open it via the `open-tree` action.
+
 ## Configuration locations
 
 Configuration is merged in this order:

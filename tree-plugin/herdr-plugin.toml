@@ -1,0 +1,18 @@
+id = "subagents.tree"
+name = "Subagent Tree"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Live delegation tree for Herdr agent panes"
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "open-tree"
+title = "Open delegation tree"
+contexts = ["pane", "workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "subagents.tree", "--entrypoint", "tree", "--placement", "overlay", "--focus"]
+
+[[panes]]
+id = "tree"
+title = "Delegation tree"
+placement = "overlay"
+command = ["node", "index.ts"]
