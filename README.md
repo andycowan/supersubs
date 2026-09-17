@@ -1,4 +1,4 @@
-# Pi Herdr Subagents
+# SuperSubs
 
 The subagent extension is configured with `subagent.json`.
 
