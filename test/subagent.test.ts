@@ -24,9 +24,9 @@ import {
 	supportedDelegationThinking,
 	sessionPathFrom,
 	splitPathsToPane,
-} from "../.pi/extensions/subagent/helpers.ts";
-import { buildJevRoutingRequest, routeModelWithJev, selectJevModel } from "../.pi/extensions/subagent/jev-router.ts";
-import { createSupervisorChannel } from "../.pi/extensions/subagent/supervisor-channel.ts";
+} from "../.pi/extensions/supersubs/helpers.ts";
+import { buildJevRoutingRequest, routeModelWithJev, selectJevModel } from "../.pi/extensions/supersubs/jev-router.ts";
+import { createSupervisorChannel } from "../.pi/extensions/supersubs/supervisor-channel.ts";
 
 const active = { provider: "openai", id: "gpt-6", name: "GPT-6" };
 

@@ -11,7 +11,7 @@ herdr integration install pi
 pi install git:github.com/andycowan/supersubs
 ```
 
-Start Pi in a Herdr-managed pane to use `subagent`. Run `pi list` to confirm the package is installed. To try a local checkout instead, run `pi install /path/to/supersubs`.
+Start Pi in a Herdr-managed pane to use `supersubs`. Run `pi list` to confirm the package is installed. To try a local checkout instead, run `pi install /path/to/supersubs`.
 
 The subagent extension is configured with `supersubs.json`.
 
@@ -113,7 +113,7 @@ Maximum delegation depth. The root session is depth `0`; its direct children are
 - Maximum: `8`
 - Default: `1`
 
-Children below the limit can spawn their own children. At the limit, `subagent` and `subagent_message` are removed from the child's active tools.
+Children below the limit can spawn their own children. At the limit, `supersubs` and `subagent_message` are removed from the child's active tools.
 
 ### `childExtensions`
 

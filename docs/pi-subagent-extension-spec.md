@@ -20,7 +20,7 @@ The parent model writes each assignment and chooses its model. The extension enf
 
 ## 3. Goals
 
-- Expose one `subagent` tool to the parent model.
+- Expose one `supersubs` tool to the parent model.
 - Let the parent write a self-contained child task.
 - Let the parent choose an allowed model explicitly.
 - Support several independent subagents running concurrently.
@@ -45,7 +45,7 @@ The parent model writes each assignment and chooses its model. The extension enf
 
 ## 5. User-visible tool
 
-### `subagent`
+### `supersubs`
 
 Starts one autonomous child Pi session in a Herdr pane and returns after launch. Completion is delivered asynchronously.
 
@@ -71,7 +71,7 @@ Conceptual input:
 | `thinking` | Yes | Child thinking level selected by the parent for this task. |
 | `cwd` | No | Child working directory. Defaults to the parent working directory. |
 
-Every child receives a fixed built-in tool allowlist: `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`, plus the extension-owned `contact_supervisor`, `subagent`, and `subagent_message` tools. Pi extension discovery is disabled; only the Herdr Pi integration, child messaging extension, subagent extension, and configured `childExtensions` are loaded explicitly. Children below `maxDepth` may delegate; at the limit, `subagent` and `subagent_message` are removed from the active tool set. No unrelated extension tools are loaded. Per-task tool profiles are deferred until there is evidence they are needed.
+Every child receives a fixed built-in tool allowlist: `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`, plus the extension-owned `contact_supervisor`, `supersubs`, and `subagent_message` tools. Pi extension discovery is disabled; only the Herdr Pi integration, child messaging extension, subagent extension, and configured `childExtensions` are loaded explicitly. Children below `maxDepth` may delegate; at the limit, `supersubs` and `subagent_message` are removed from the active tool set. No unrelated extension tools are loaded. Per-task tool profiles are deferred until there is evidence they are needed.
 
 ### `subagent_message`
 
@@ -85,7 +85,7 @@ Sends a live message from the parent to one running child:
 }
 ```
 
-`id` is the exact delegation ID returned by `subagent`. Without `replyTo`, the message is a non-blocking nudge delivered as a steer. With `replyTo`, it answers the matching blocking `need_decision` request.
+`id` is the exact delegation ID returned by `supersubs`. Without `replyTo`, the message is a non-blocking nudge delivered as a steer. With `replyTo`, it answers the matching blocking `need_decision` request.
 
 ### Validation
 
@@ -145,7 +145,7 @@ At session start, the extension builds the delegation pool from Pi's scoped mode
 
 ### Prompt exposure
 
-The `subagent` tool description and prompt guidance must include:
+The `supersubs` tool description and prompt guidance must include:
 
 - exact permitted model identifiers;
 - each model's supported thinking levels from Pi's model metadata;
@@ -197,7 +197,7 @@ A strong task normally states:
 
 The extension adds only a small operational suffix:
 
-> Work autonomously on this assignment. Stay within the granted capabilities. Use contact_supervisor only for a blocking decision or a meaningful plan-changing update. Delegate only when the subagent tool is available and its routing guidance says delegation is worthwhile. Your final response must report the result, supporting evidence, and any unresolved blocker in at most 800 words.
+> Work autonomously on this assignment. Stay within the granted capabilities. Use contact_supervisor only for a blocking decision or a meaningful plan-changing update. Delegate only when the supersubs tool is available and its routing guidance says delegation is worthwhile. Your final response must report the result, supporting evidence, and any unresolved blocker in at most 800 words.
 
 `contact_supervisor` supports two reasons:
 
@@ -329,7 +329,7 @@ The parent receives a steer message containing the error, child identifiers, and
 - `maxConcurrency` accepts only integers from **1** through **16**.
 - The concurrency limit applies per parent Pi extension instance, not across the whole tree.
 - Maximum delegation depth is configured by `maxDepth`, defaults to **1**, and accepts integers from **1** through **8**.
-- The root is depth 0. Sessions at `maxDepth` have `subagent` and `subagent_message` removed from their active tools, and execution checks enforce the same boundary.
+- The root is depth 0. Sessions at `maxDepth` have `supersubs` and `subagent_message` removed from their active tools, and execution checks enforce the same boundary.
 - Independent children may run concurrently.
 - The parent is instructed not to launch overlapping writers in one checkout.
 - The extension does not infer file ownership or serialize writes in version one.
@@ -349,7 +349,7 @@ The parent receives a steer message containing the error, child identifiers, and
 - Project context and extensions run with the user's permissions.
 - Prompt instructions are not a sandbox.
 - Model, fixed tool allowlist, concurrency, and depth restrictions are enforced by the extension.
-- The `subagent` tool is removed at `maxDepth`, but this is not a process sandbox: `bash` can still launch other programs.
+- The `supersubs` tool is removed at `maxDepth`, but this is not a process sandbox: `bash` can still launch other programs.
 - Each child gets a unique local socket path; Unix sockets are owner-only and are removed during cleanup.
 - The messaging channel addresses only the known parent-child relationship and provides no peer discovery.
 - `cwd` is resolved and validated before use.
@@ -375,7 +375,7 @@ Task and result bodies should not be written to additional logs because they alr
 
 ## 15. Acceptance criteria
 
-- [ ] AC-1: Pi exposes one `subagent` tool without reading agent definition files.
+- [ ] AC-1: Pi exposes one `supersubs` tool without reading agent definition files.
 - [ ] AC-2: Every launch requires a model from the advertised delegation pool.
 - [ ] AC-3: A child starts in a non-focused Herdr pane.
 - [ ] AC-4: Herdr reports the child as a managed Pi agent.

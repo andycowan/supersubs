@@ -11,9 +11,9 @@
 	"private": false,
 	"type": "module",
 	"pi": {
-		"extensions": [".pi/extensions/subagent"]
+		"extensions": [".pi/extensions/supersubs"]
 	},
-	"files": [".pi/extensions/subagent/"],
+	"files": [".pi/extensions/supersubs/"],
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*",
 		"@earendil-works/pi-ai": "*",

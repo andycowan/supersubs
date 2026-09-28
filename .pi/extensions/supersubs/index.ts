@@ -38,14 +38,14 @@ import {
 import { routeModelWithJev, type JevRoutingResult } from "./jev-router.ts";
 import { createSupervisorChannel, type SupervisorChannel } from "./supervisor-channel.ts";
 
-const CHILD_TOOLS = "read,bash,edit,write,grep,find,ls,contact_supervisor,subagent,subagent_message";
-const DELEGATION_TOOLS = new Set(["subagent", "subagent_message"]);
+const CHILD_TOOLS = "read,bash,edit,write,grep,find,ls,contact_supervisor,supersubs,subagent_message";
+const DELEGATION_TOOLS = new Set(["supersubs", "subagent_message"]);
 const PANES_PER_COLUMN = 4;
 const RESULT_TYPE = "subagent-result";
 const TASK_SUFFIX =
 	"Work autonomously on this assignment. Stay within the granted capabilities. " +
 	"Use contact_supervisor only for a blocking decision or a meaningful plan-changing update. " +
-	"Delegate only when the subagent tool is available and its routing guidance says delegation is worthwhile. " +
+	"Delegate only when the supersubs tool is available and its routing guidance says delegation is worthwhile. " +
 	"Your final response must report the result, supporting evidence, and any unresolved blocker in at most 800 words.";
 
 interface ActiveChild {
@@ -157,7 +157,7 @@ function poolPrompt(ctx: any, config: SubagentConfig, currentDepth: number): str
 
 	return [
 		"## Subagent delegation",
-		"The subagent tool starts autonomous Pi children in visible Herdr panes.",
+		"The supersubs tool starts autonomous Pi children in visible Herdr panes.",
 		...modelRouting,
 		`Delegation limits: ${config.maxConcurrency} concurrent direct children; maximum depth ${config.maxDepth} (current depth ${currentDepth}).`,
 		config.routingMode === "cost"
@@ -427,7 +427,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		if (!pi.getActiveTools().includes("subagent")) return;
+		if (!pi.getActiveTools().includes("supersubs")) return;
 		return { systemPrompt: `${event.systemPrompt}\n\n${poolPrompt(ctx, config, currentDepth)}` };
 	});
 
@@ -441,14 +441,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "subagent",
-		label: "Subagent",
+		name: "supersubs",
+		label: "SuperSubs",
 		description: "Start one autonomous Pi child in a Herdr pane. Model selection is controlled by the configured modelRouter. Completion is delivered asynchronously.",
 		promptSnippet: "Delegate a self-contained task to an autonomous Pi child in Herdr",
 		promptGuidelines: [
-			"Use subagent according to the active routing mode in the injected delegation guidance.",
+			"Use supersubs according to the active routing mode in the injected delegation guidance.",
 			"Delegated work must replace parent work: after launch, continue only disjoint work or end the turn until completion.",
-			"Do not poll after subagent starts; its result is delivered automatically.",
+			"Do not poll after supersubs starts; its result is delivered automatically.",
 		],
 		parameters: SubagentParams,
 
@@ -462,7 +462,7 @@ export default function (pi: ExtensionAPI) {
 				!process.env.HERDR_TAB_ID ||
 				!process.env.HERDR_PANE_ID
 			) {
-				throw new Error("subagent requires Pi to be running in a Herdr-managed pane");
+				throw new Error("supersubs requires Pi to be running in a Herdr-managed pane");
 			}
 
 			const name = cleanLabel(params.name);
@@ -704,7 +704,7 @@ export default function (pi: ExtensionAPI) {
 		],
 		parameters: Type.Object(
 			{
-				id: Type.String({ minLength: 1, description: "Exact delegation ID returned by subagent" }),
+				id: Type.String({ minLength: 1, description: "Exact delegation ID returned by supersubs" }),
 				message: Type.String({ minLength: 1, maxLength: 20_000 }),
 				replyTo: Type.Optional(Type.String({ minLength: 1, description: "Request ID from a needs-decision message" })),
 			},
