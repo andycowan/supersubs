@@ -32,8 +32,10 @@ import {
 	sessionLineCount,
 	splitPathsToPane,
 	sessionPathFrom,
+	type DelegationModel,
 	type SubagentConfig,
 } from "./helpers.ts";
+import { routeModelWithJev, type JevRoutingResult } from "./jev-router.ts";
 import { createSupervisorChannel, type SupervisorChannel } from "./supervisor-channel.ts";
 
 const CHILD_TOOLS = "read,bash,edit,write,grep,find,ls,contact_supervisor,subagent,subagent_message";
@@ -58,7 +60,13 @@ const SubagentParams = Type.Object(
 	{
 		name: Type.String({ minLength: 1, maxLength: 80, description: "Short task label and pane title shown in Herdr" }),
 		task: Type.String({ minLength: 1, maxLength: 100_000, description: "Self-contained assignment for the child" }),
-		model: Type.String({ minLength: 1, maxLength: 256, description: "Exact selector from the delegation pool" }),
+		model: Type.Optional(
+			Type.String({
+				minLength: 1,
+				maxLength: 256,
+				description: "Exact selector when modelRouter is parent; ignored when modelRouter is jev",
+			}),
+		),
 		thinking: StringEnum(DELEGATION_THINKING_LEVELS, {
 			description: "Child thinking level; choose the lowest level adequate for the task",
 		}),
@@ -135,12 +143,22 @@ function poolPrompt(ctx: any, config: SubagentConfig, currentDepth: number): str
 	const pool = buildDelegationPool(ctx.model, ctx.thinkingLevel, ctx.scopedModels ?? [], config.allowCrossProvider);
 	const models = pool.map((entry) => formatDelegationModel(entry, config.modelHints[entry.selector])).join("\n");
 
+	const modelRouting =
+		config.modelRouter === "jev"
+			? [
+					"Model routing is handled exclusively by Jev. Do not choose or provide a model; SuperSubs selects it from the current delegation pool after the tool call.",
+					"You remain responsible only for the thinking level: off/minimal for mechanical lookups; low for bounded repository analysis, routine implementation, tests, and summaries; medium/high for complex planning, architecture, security-sensitive work, ambiguous debugging, or cross-cutting reasoning.",
+				]
+			: [
+					`Use only these exact${config.allowCrossProvider ? "" : " same-provider"} model selectors:`,
+					models || "- none",
+					"Choose the cheapest adequate model and the lowest adequate thinking level shown for that model: off/minimal for mechanical lookups; low for bounded repository analysis, routine implementation, tests, and summaries; medium/high for complex planning, architecture, security-sensitive work, ambiguous debugging, or cross-cutting reasoning.",
+				];
+
 	return [
 		"## Subagent delegation",
 		"The subagent tool starts autonomous Pi children in visible Herdr panes.",
-		`Use only these exact${config.allowCrossProvider ? "" : " same-provider"} model selectors:`,
-		models || "- none",
-		"Choose the cheapest adequate model and the lowest adequate thinking level shown for that model: off/minimal for mechanical lookups; low for bounded repository analysis, routine implementation, tests, and summaries; medium/high for complex planning, architecture, security-sensitive work, ambiguous debugging, or cross-cutting reasoning.",
+		...modelRouting,
 		`Delegation limits: ${config.maxConcurrency} concurrent direct children; maximum depth ${config.maxDepth} (current depth ${currentDepth}).`,
 		config.routingMode === "cost"
 			? "Routing mode: minimize cost. Delegate serially only when a cheaper child can own a substantial bounded task end-to-end. Do small cohesive changes directly when they need only one investigation, edit, and verification pass."
@@ -425,7 +443,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: "Start one autonomous Pi child in a Herdr pane using an exact model selector from the current delegation pool. Completion is delivered asynchronously.",
+		description: "Start one autonomous Pi child in a Herdr pane. Model selection is controlled by the configured modelRouter. Completion is delivered asynchronously.",
 		promptSnippet: "Delegate a self-contained task to an autonomous Pi child in Herdr",
 		promptGuidelines: [
 			"Use subagent according to the active routing mode in the injected delegation guidance.",
@@ -453,13 +471,36 @@ export default function (pi: ExtensionAPI) {
 			if (!task) throw new Error("Subagent task must contain visible characters");
 
 			const pool = buildDelegationPool(ctx.model, ctx.thinkingLevel, ctx.scopedModels ?? [], config.allowCrossProvider);
-			const selectedModel = pool.find(({ selector }) => selector === params.model);
-			if (!selectedModel) {
-				throw new Error(`Model is not in the delegation pool. Allowed: ${pool.map(({ selector }) => selector).join(", ") || "none"}`);
-			}
-			const thinking = resolveDelegationThinking(selectedModel, params.thinking);
-
+			if (pool.length === 0) throw new Error("The delegation pool is empty");
 			if (active.size >= config.maxConcurrency) throw new Error(`At most ${config.maxConcurrency} subagents may run concurrently`);
+
+			let selectedModel: DelegationModel;
+			let jevRouting: JevRoutingResult | undefined;
+			if (config.modelRouter === "jev") {
+				const eligible = pool.filter((entry) => {
+					try {
+						resolveDelegationThinking(entry, params.thinking);
+						return true;
+					} catch {
+						return false;
+					}
+				});
+				if (eligible.length === 0) throw new Error(`No delegation models support ${params.thinking} thinking`);
+				if (eligible.length === 1) {
+					selectedModel = eligible[0];
+				} else {
+					jevRouting = await routeModelWithJev(task, eligible, config.modelHints, config.jevApiKey, signal);
+					selectedModel = jevRouting.entry;
+				}
+			} else {
+				if (!params.model) throw new Error("model is required when modelRouter is parent");
+				selectedModel = pool.find(({ selector }) => selector === params.model);
+				if (!selectedModel) {
+					throw new Error(`Model is not in the delegation pool. Allowed: ${pool.map(({ selector }) => selector).join(", ")}`);
+				}
+			}
+			const selectedSelector = selectedModel.selector;
+			const thinking = resolveDelegationThinking(selectedModel, params.thinking);
 			const id = randomUUID();
 			const child: ActiveChild = { id, name, questions: new Set() };
 			active.set(id, child);
@@ -514,7 +555,7 @@ export default function (pi: ExtensionAPI) {
 						"30000",
 						"--",
 						"--model",
-						params.model,
+						selectedSelector,
 						"--models",
 						pool.map(({ selector }) => selector).join(","),
 						"--thinking",
@@ -528,6 +569,7 @@ export default function (pi: ExtensionAPI) {
 						childIntercomPath(),
 						"--extension",
 						subagentExtensionPath(),
+						...config.childExtensions.flatMap((extension) => ["--extension", extension]),
 					],
 					signal,
 				);
@@ -587,7 +629,7 @@ export default function (pi: ExtensionAPI) {
 						"--token",
 						`delegation_label=${name}`,
 						"--token",
-						`delegation_model=${cleanLabel(params.model)}`,
+						`delegation_model=${cleanLabel(selectedSelector)}`,
 						"--token",
 						`delegation_thinking=${thinking}`,
 					],
@@ -600,7 +642,7 @@ export default function (pi: ExtensionAPI) {
 					id,
 					name,
 					task,
-					model: params.model,
+					model: selectedSelector,
 					thinking,
 					paneId,
 					sessionPath,
@@ -614,10 +656,33 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `Started subagent "${name}" at depth ${childDepth} in Herdr pane ${paneId} with ${params.model} at ${thinking} thinking. Completion will arrive automatically. Do not poll or duplicate its assignment; continue only disjoint work, otherwise end this turn.`,
+							text: `Started subagent "${name}" at depth ${childDepth} in Herdr pane ${paneId} with ${selectedSelector} at ${thinking} thinking${jevRouting ? ` (selected by Jev via ${jevRouting.policy} policy)` : config.modelRouter === "jev" ? " (only eligible model)" : ""}. Completion will arrive automatically. Do not poll or duplicate its assignment; continue only disjoint work, otherwise end this turn.`,
 						},
 					],
-					details: { delegationId: id, name, paneId, model: params.model, thinking, depth: childDepth, sessionPath, status: "started" },
+					details: {
+						delegationId: id,
+						name,
+						paneId,
+						model: selectedSelector,
+						modelRouter: config.modelRouter,
+						thinking,
+						depth: childDepth,
+						sessionPath,
+						status: "started",
+						...(jevRouting
+							? {
+								modelRouting: {
+									router: "jev",
+									policy: jevRouting.policy,
+									securitySensitive: jevRouting.securitySensitive,
+									confidence: jevRouting.confidence,
+									jevModel: jevRouting.model,
+									usage: jevRouting.usage,
+									elapsedMs: jevRouting.elapsedMs,
+								},
+							}
+							: {}),
+					},
 				};
 			} catch (error) {
 				active.delete(id);

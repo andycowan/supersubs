@@ -24,6 +24,7 @@ export interface DelegationModel {
 }
 
 export type RoutingMode = "overhead" | "cost";
+export type ModelRouter = "parent" | "jev";
 export type CostTier = "free" | "low" | "medium" | "high";
 
 export interface ModelRoutingHint {
@@ -34,23 +35,38 @@ export interface ModelRoutingHint {
 
 export interface SubagentConfig {
 	routingMode: RoutingMode;
+	modelRouter: ModelRouter;
+	jevApiKey?: string;
 	allowCrossProvider: boolean;
 	maxConcurrency: number;
 	maxDepth: number;
+	childExtensions: string[];
 	modelHints: Record<string, ModelRoutingHint>;
 }
 
 export const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
 	routingMode: "overhead",
+	modelRouter: "parent",
 	allowCrossProvider: true,
 	maxConcurrency: 4,
 	maxDepth: 1,
+	childExtensions: [],
 	modelHints: {},
 };
 
 export function resolveRoutingMode(value: unknown): RoutingMode {
 	if (value === "overhead" || value === "cost") return value;
 	throw new Error(`routingMode must be "overhead" or "cost", got ${JSON.stringify(value)}`);
+}
+
+export function resolveModelRouter(value: unknown): ModelRouter {
+	if (value === "parent" || value === "jev") return value;
+	throw new Error(`modelRouter must be "parent" or "jev", got ${JSON.stringify(value)}`);
+}
+
+export function resolveJevApiKey(value: unknown): string {
+	if (typeof value === "string" && value.trim()) return value.trim();
+	throw new Error("jevApiKey must be a non-empty string");
 }
 
 export function resolveMaxConcurrency(value: unknown): number {
@@ -61,6 +77,13 @@ export function resolveMaxConcurrency(value: unknown): number {
 export function resolveMaxDepth(value: unknown): number {
 	if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 8) return value;
 	throw new Error(`maxDepth must be an integer from 1 through 8, got ${JSON.stringify(value)}`);
+}
+
+function resolveChildExtensions(value: unknown, file: string): string[] {
+	if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim())) {
+		throw new Error(`Invalid subagent config ${file}: childExtensions must be an array of non-empty strings`);
+	}
+	return value.map((item) => item.trim());
 }
 
 const MODEL_SELECTOR = /^[^/\s:]+\/[^/\s:]+(?::[^/\s:]+)?$/;
@@ -117,9 +140,12 @@ function readConfig(file: string): Partial<SubagentConfig> {
 	const unknown = Object.keys(input).filter(
 		(key) =>
 			key !== "routingMode" &&
+			key !== "modelRouter" &&
+			key !== "jevApiKey" &&
 			key !== "allowCrossProvider" &&
 			key !== "maxConcurrency" &&
 			key !== "maxDepth" &&
+			key !== "childExtensions" &&
 			key !== "modelHints",
 	);
 	if (unknown.length) throw new Error(`Invalid subagent config ${file}: unknown field ${unknown.join(", ")}`);
@@ -129,9 +155,12 @@ function readConfig(file: string): Partial<SubagentConfig> {
 
 	return {
 		...(input.routingMode === undefined ? {} : { routingMode: resolveRoutingMode(input.routingMode) }),
+		...(input.modelRouter === undefined ? {} : { modelRouter: resolveModelRouter(input.modelRouter) }),
+		...(input.jevApiKey === undefined ? {} : { jevApiKey: resolveJevApiKey(input.jevApiKey) }),
 		...(input.allowCrossProvider === undefined ? {} : { allowCrossProvider: input.allowCrossProvider }),
 		...(input.maxConcurrency === undefined ? {} : { maxConcurrency: resolveMaxConcurrency(input.maxConcurrency) }),
 		...(input.maxDepth === undefined ? {} : { maxDepth: resolveMaxDepth(input.maxDepth) }),
+		...(input.childExtensions === undefined ? {} : { childExtensions: resolveChildExtensions(input.childExtensions, file) }),
 		...(input.modelHints === undefined ? {} : { modelHints: resolveModelHints(input.modelHints, file) }),
 	};
 }
@@ -146,8 +175,8 @@ function mergeModelHints(...configs: Partial<SubagentConfig>[]): Record<string, 
 }
 
 export function loadSubagentConfig(cwd: string, agentDir: string, configDirName: string, projectTrusted: boolean): SubagentConfig {
-	const globalConfig = readConfig(path.join(agentDir, "subagent.json"));
-	const projectConfig = projectTrusted ? readConfig(path.join(cwd, configDirName, "subagent.json")) : {};
+	const globalConfig = readConfig(path.join(agentDir, "supersubs.json"));
+	const projectConfig = projectTrusted ? readConfig(path.join(cwd, configDirName, "supersubs.json")) : {};
 	return {
 		...DEFAULT_SUBAGENT_CONFIG,
 		...globalConfig,

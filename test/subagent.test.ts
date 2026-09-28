@@ -18,12 +18,14 @@ import {
 	resolveDelegationThinking,
 	resolveMaxConcurrency,
 	resolveMaxDepth,
+	resolveModelRouter,
 	resolveRoutingMode,
 	sessionLineCount,
 	supportedDelegationThinking,
 	sessionPathFrom,
 	splitPathsToPane,
 } from "../.pi/extensions/subagent/helpers.ts";
+import { buildJevRoutingRequest, routeModelWithJev, selectJevModel } from "../.pi/extensions/subagent/jev-router.ts";
 import { createSupervisorChannel } from "../.pi/extensions/subagent/supervisor-channel.ts";
 
 const active = { provider: "openai", id: "gpt-6", name: "GPT-6" };
@@ -38,19 +40,24 @@ test("subagent config follows default, global, trusted-project precedence", () =
 	try {
 		assert.deepEqual(loadSubagentConfig(cwd, agentDir, ".pi", true), {
 			routingMode: "overhead",
+			modelRouter: "parent",
 			allowCrossProvider: true,
 			maxConcurrency: 4,
 			maxDepth: 1,
+			childExtensions: [],
 			modelHints: {},
 		});
 
 		writeFileSync(
-			path.join(agentDir, "subagent.json"),
+			path.join(agentDir, "supersubs.json"),
 			JSON.stringify({
 				routingMode: "cost",
+				modelRouter: "jev",
+				jevApiKey: "global-key",
 				allowCrossProvider: false,
 				maxConcurrency: 8,
 				maxDepth: 2,
+				childExtensions: ["npm:@example/stats"],
 				modelHints: {
 					"openai/gpt-6": { costTier: "low", bestFor: ["bounded work"], avoidFor: ["security"] },
 					"deepseek/v4-pro": { costTier: "high" },
@@ -58,11 +65,14 @@ test("subagent config follows default, global, trusted-project precedence", () =
 			}),
 		);
 		writeFileSync(
-			path.join(cwd, ".pi", "subagent.json"),
+			path.join(cwd, ".pi", "supersubs.json"),
 			JSON.stringify({
+				modelRouter: "parent",
+				jevApiKey: " project-key ",
 				allowCrossProvider: true,
 				maxConcurrency: 12,
 				maxDepth: 3,
+				childExtensions: [" ./project-extension.ts "],
 				modelHints: {
 					"openai/gpt-6": { avoidFor: ["architecture"] },
 					"openai/gpt-5.6": { bestFor: ["tests"] },
@@ -71,9 +81,12 @@ test("subagent config follows default, global, trusted-project precedence", () =
 		);
 		assert.deepEqual(loadSubagentConfig(cwd, agentDir, ".pi", true), {
 			routingMode: "cost",
+			modelRouter: "parent",
+			jevApiKey: "project-key",
 			allowCrossProvider: true,
 			maxConcurrency: 12,
 			maxDepth: 3,
+			childExtensions: ["./project-extension.ts"],
 			modelHints: {
 				"openai/gpt-6": { costTier: "low", bestFor: ["bounded work"], avoidFor: ["architecture"] },
 				"deepseek/v4-pro": { costTier: "high" },
@@ -82,30 +95,44 @@ test("subagent config follows default, global, trusted-project precedence", () =
 		});
 		assert.deepEqual(loadSubagentConfig(cwd, agentDir, ".pi", false), {
 			routingMode: "cost",
+			modelRouter: "jev",
+			jevApiKey: "global-key",
 			allowCrossProvider: false,
 			maxConcurrency: 8,
 			maxDepth: 2,
+			childExtensions: ["npm:@example/stats"],
 			modelHints: {
 				"openai/gpt-6": { costTier: "low", bestFor: ["bounded work"], avoidFor: ["security"] },
 				"deepseek/v4-pro": { costTier: "high" },
 			},
 		});
 
-		writeFileSync(path.join(cwd, ".pi", "subagent.json"), JSON.stringify({ typo: true }));
+		writeFileSync(path.join(cwd, ".pi", "supersubs.json"), JSON.stringify({ typo: true }));
 		assert.throws(() => loadSubagentConfig(cwd, agentDir, ".pi", true), /unknown field typo/);
+		for (const value of ["", " ", 42, null]) {
+			writeFileSync(path.join(cwd, ".pi", "supersubs.json"), JSON.stringify({ jevApiKey: value }));
+			assert.throws(() => loadSubagentConfig(cwd, agentDir, ".pi", true), /jevApiKey must be a non-empty string/);
+		}
+		for (const value of ["npm:@example/stats", [""], [42], null]) {
+			writeFileSync(path.join(cwd, ".pi", "supersubs.json"), JSON.stringify({ childExtensions: value }));
+			assert.throws(() => loadSubagentConfig(cwd, agentDir, ".pi", true), /childExtensions must be an array of non-empty strings/);
+		}
 		for (const value of [0, 17, 1.5, "4", null]) {
-			writeFileSync(path.join(cwd, ".pi", "subagent.json"), JSON.stringify({ maxConcurrency: value }));
+			writeFileSync(path.join(cwd, ".pi", "supersubs.json"), JSON.stringify({ maxConcurrency: value }));
 			assert.throws(() => loadSubagentConfig(cwd, agentDir, ".pi", true), /maxConcurrency must be an integer from 1 through 16/);
 		}
 		assert.equal(resolveMaxConcurrency(1), 1);
 		assert.equal(resolveMaxConcurrency(16), 16);
 		for (const value of [0, 9, 1.5, "2", null]) {
-			writeFileSync(path.join(cwd, ".pi", "subagent.json"), JSON.stringify({ maxDepth: value }));
+			writeFileSync(path.join(cwd, ".pi", "supersubs.json"), JSON.stringify({ maxDepth: value }));
 			assert.throws(() => loadSubagentConfig(cwd, agentDir, ".pi", true), /maxDepth must be an integer from 1 through 8/);
 		}
 		assert.equal(resolveMaxDepth(1), 1);
 		assert.equal(resolveMaxDepth(8), 8);
 		assert.throws(() => resolveRoutingMode("fast"), /must be "overhead" or "cost"/);
+		assert.equal(resolveModelRouter("parent"), "parent");
+		assert.equal(resolveModelRouter("jev"), "jev");
+		assert.throws(() => resolveModelRouter("auto"), /must be "parent" or "jev"/);
 	} finally {
 		rmSync(root, { recursive: true });
 	}
@@ -129,7 +156,7 @@ test("model hints reject invalid selectors and values", () => {
 			{ modelHints: { "openai/gpt-6": { avoidFor: [" "] } } },
 		];
 		for (const value of invalid) {
-			writeFileSync(path.join(cwd, ".pi", "subagent.json"), JSON.stringify(value));
+			writeFileSync(path.join(cwd, ".pi", "supersubs.json"), JSON.stringify(value));
 			assert.throws(() => loadSubagentConfig(cwd, agentDir, ".pi", true), /Invalid subagent config/);
 		}
 	} finally {
@@ -150,6 +177,50 @@ test("delegation model lines prefer Pi prices over configured cost tiers", () =>
 		),
 		"- openai-codex/gpt-5.6-luna — $1/M in, $2/M out; best for: tests; avoid for: large refactors",
 	);
+});
+
+test("Jev routing receives compact model capabilities and code selects the policy", async () => {
+	const luna = {
+		provider: "openai-codex",
+		id: "gpt-5.6-luna",
+		reasoning: true,
+		cost: { input: 0.2, output: 1.2 },
+	};
+	const astra = {
+		provider: "openai-codex",
+		id: "gpt-6-astra",
+		reasoning: true,
+		cost: { input: 10, output: 50 },
+	};
+	const pool = buildDelegationPool(luna, "low", [{ model: luna }, { model: astra }]);
+	const hints = {
+		"openai-codex/gpt-5.6-luna": { costTier: "low" as const, bestFor: ["bounded coding"], avoidFor: ["security"] },
+		"openai-codex/gpt-6-astra": { costTier: "high" as const, bestFor: ["architecture", "security"] },
+	};
+	const { request, byId } = buildJevRoutingRequest("Implement API key handling", pool, hints);
+	const questions = request.questions as any;
+	assert.match(questions.capability.criteria.m0, /gpt-5\.6-luna.*best for: bounded coding.*avoid for: security.*cost rank 1/);
+	assert.match(questions.capability.criteria.m1, /gpt-6-astra.*best for: architecture, security.*cost rank 2/);
+	assert.deepEqual(questions.capability.criteria, questions.economy.criteria);
+
+	const response = {
+		model: "jev-1.13.0",
+		answers: {
+			capability: { type: "choice", choice: "m1", confidence: 0.8, probabilities: { m0: 0.1, m1: 0.9 } },
+			economy: { type: "choice", choice: "m0", confidence: 0.7, probabilities: { m0: 0.8, m1: 0.2 } },
+			security_sensitive: { type: "noul", noul: 0.9 },
+		},
+	};
+	assert.equal(selectJevModel(response, byId).entry.selector, "openai-codex/gpt-6-astra");
+	assert.equal(selectJevModel(response, byId).policy, "capability");
+
+	response.answers.security_sensitive.noul = 0.1;
+	assert.equal(selectJevModel(response, byId).entry.selector, "openai-codex/gpt-5.6-luna");
+	assert.equal(selectJevModel(response, byId).policy, "economy");
+
+	response.answers.economy.choice = "missing";
+	assert.throws(() => selectJevModel(response, byId), /invalid economy answer/);
+	await assert.rejects(routeModelWithJev("task", pool, hints, undefined), /jevApiKey is not configured in supersubs.json/);
 });
 
 test("delegation pool allows cross-provider scoped models by default", () => {

@@ -71,7 +71,7 @@ Conceptual input:
 | `thinking` | Yes | Child thinking level selected by the parent for this task. |
 | `cwd` | No | Child working directory. Defaults to the parent working directory. |
 
-Every child receives a fixed built-in tool allowlist: `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`, plus the extension-owned `contact_supervisor`, `subagent`, and `subagent_message` tools. Pi extension discovery is disabled; only the Herdr Pi integration, child messaging extension, and subagent extension are loaded explicitly. Children below `maxDepth` may delegate; at the limit, `subagent` and `subagent_message` are removed from the active tool set. No unrelated extension tools are loaded. Per-task tool profiles are deferred until there is evidence they are needed.
+Every child receives a fixed built-in tool allowlist: `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`, plus the extension-owned `contact_supervisor`, `subagent`, and `subagent_message` tools. Pi extension discovery is disabled; only the Herdr Pi integration, child messaging extension, subagent extension, and configured `childExtensions` are loaded explicitly. Children below `maxDepth` may delegate; at the limit, `subagent` and `subagent_message` are removed from the active tool set. No unrelated extension tools are loaded. Per-task tool profiles are deferred until there is evidence they are needed.
 
 ### `subagent_message`
 
@@ -107,8 +107,8 @@ Tool arguments must be passed as process arguments, not interpolated into shell 
 The extension reads JSON configuration using Pi's normal global/project precedence:
 
 1. Built-in defaults.
-2. `~/.pi/agent/subagent.json` global values.
-3. `<cwd>/.pi/subagent.json` project values, only when `ctx.isProjectTrusted()` is true.
+2. `~/.pi/agent/supersubs.json` global values.
+3. `<cwd>/.pi/supersubs.json` project values, only when `ctx.isProjectTrusted()` is true.
 
 Project values override global values by key. Unknown fields, invalid JSON, and invalid values are rejected.
 
@@ -118,6 +118,7 @@ Project values override global values by key. Unknown fields, invalid JSON, and 
   "allowCrossProvider": true,
   "maxConcurrency": 8,
   "maxDepth": 2,
+  "childExtensions": ["npm:@arhen/pi-core-tps-stats"],
   "modelHints": {
     "openai-codex/gpt-5.6-luna": {
       "costTier": "low",
@@ -128,7 +129,7 @@ Project values override global values by key. Unknown fields, invalid JSON, and 
 }
 ```
 
-Defaults are `routingMode: "overhead"`, `allowCrossProvider: true`, `maxConcurrency: 4`, `maxDepth: 1`, and no `modelHints`. `maxConcurrency` must be an integer from 1 through 16 and limits concurrent direct children per parent session. `maxDepth` must be an integer from 1 through 8, with the root at depth 0. Unknown fields, invalid JSON, and invalid values are rejected.
+Defaults are `routingMode: "overhead"`, `allowCrossProvider: true`, `maxConcurrency: 4`, `maxDepth: 1`, no `childExtensions`, and no `modelHints`. `maxConcurrency` must be an integer from 1 through 16 and limits concurrent direct children per parent session. `maxDepth` must be an integer from 1 through 8, with the root at depth 0. `childExtensions` must be an array of non-empty Pi extension package sources or paths and overrides the lower-precedence array as a whole. Unknown fields, invalid JSON, and invalid values are rejected.
 
 `modelHints` is optional. Its keys must be exact provider-qualified selectors in the form `provider/model` or `provider/model:thinking`; values may contain only `costTier` (`free`, `low`, `medium`, or `high`), `bestFor`, and `avoidFor`. The latter two must be arrays of non-empty strings. Hints are merged by selector and then by field: defaults, global configuration, and trusted project configuration are applied in that order, with project fields overriding global fields without discarding other fields for the same selector. Untrusted project configuration is ignored as a whole, as with the other settings.
 
@@ -229,7 +230,7 @@ Before creating a pane, the extension verifies:
    - the fixed child tool allowlist;
    - the parent's scoped delegation model pool;
    - child working directory and inherited root/depth metadata;
-   - `--no-extensions` plus the explicit Herdr Pi integration, child messaging extension, and subagent extension;
+   - `--no-extensions` plus the explicit Herdr Pi integration, child messaging extension, subagent extension, and configured `childExtensions`;
    - a persistent child session.
 6. Read the child session path reported by Herdr.
 7. Record the current child-session entry count.
@@ -387,7 +388,7 @@ Task and result bodies should not be written to additional logs because they alr
 - [ ] AC-11: Launch failure does not leave a newly-created empty pane.
 - [ ] AC-12: A settled child's pane closes after result delivery.
 - [ ] AC-13: Parent shutdown leaves running child panes intact.
-- [ ] AC-14: Configuration follows defaults < global `subagent.json` < trusted project `subagent.json` precedence.
+- [ ] AC-14: Configuration follows defaults < global `supersubs.json` < trusted project `supersubs.json` precedence.
 - [ ] AC-15: Routing defaults to `overhead`; `routingMode: "cost"` injects cost-minimizing delegation guidance.
 - [ ] AC-16: Valid per-model hints are injected compactly, with Pi pricing taking precedence over configured cost tiers.
 - [ ] AC-17: Every launch requires a parent-selected thinking level, passes it to child Pi, and rejects levels unsupported by the model or conflicting with scoped thinking-level pins.

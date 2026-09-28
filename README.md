@@ -1,14 +1,27 @@
 # SuperSubs
 
-The subagent extension is configured with `subagent.json`.
+SuperSubs is a Pi extension that delegates coding tasks to autonomous subagents in Herdr panes. It supports configurable model routing, parallel work, and parent–child messaging.
+
+## Installation
+
+Requires Pi, Herdr, and Node.js 22.18 or newer. Install Herdr's Pi integration, then install SuperSubs as a Pi package:
+
+```sh
+herdr integration install pi
+pi install git:github.com/andycowan/supersubs
+```
+
+Start Pi in a Herdr-managed pane to use `subagent`. Run `pi list` to confirm the package is installed. To try a local checkout instead, run `pi install /path/to/supersubs`.
+
+The subagent extension is configured with `supersubs.json`.
 
 ## Configuration locations
 
 Configuration is merged in this order:
 
 1. Built-in defaults.
-2. Global: `${PI_CODING_AGENT_DIR:-~/.pi/agent}/subagent.json`.
-3. Trusted project: `<project>/.pi/subagent.json`.
+2. Global: `${PI_CODING_AGENT_DIR:-~/.pi/agent}/supersubs.json`.
+3. Trusted project: `<project>/.pi/supersubs.json`.
 
 Later values override earlier ones. Project configuration is ignored unless Pi trusts the project. Unknown fields, invalid JSON, and invalid values stop configuration loading with an error.
 
@@ -19,9 +32,12 @@ Run `/reload` or restart Pi after changing configuration.
 ```json
 {
   "routingMode": "cost",
+  "modelRouter": "jev",
+  "jevApiKey": "...",
   "allowCrossProvider": true,
   "maxConcurrency": 8,
   "maxDepth": 2,
+  "childExtensions": ["npm:@arhen/pi-core-tps-stats"],
   "modelHints": {
     "opencode-go/omen-alpha": {
       "costTier": "low",
@@ -44,6 +60,34 @@ Controls when the parent should delegate.
 | `"cost"` | Prefer a cheaper child for substantial bounded work; keep small cohesive changes in the parent. |
 
 Default: `"overhead"`.
+
+### `modelRouter`
+
+Controls who chooses the child model.
+
+| Value | Behavior |
+|---|---|
+| `"parent"` | The parent model must choose an exact selector from the delegation pool. |
+| `"jev"` | Jev chooses the model. Any model supplied by the parent is ignored. |
+
+Default: `"parent"`.
+
+Jev routing requires `jevApiKey` in `supersubs.json`. Store it in the global `${PI_CODING_AGENT_DIR:-~/.pi/agent}/supersubs.json` rather than a project file so it is not committed:
+
+```json
+{
+  "modelRouter": "jev",
+  "jevApiKey": "..."
+}
+```
+
+Routing is authoritative: a missing key, timeout, HTTP error, or invalid response aborts the delegation rather than falling back to the parent's model choice. The parent still chooses the thinking level; SuperSubs filters out models that do not support it before asking Jev.
+
+Jev receives the delegated task plus compact candidate metadata: selector, price rank, supported thinking levels, and configured `bestFor`/`avoidFor` hints. Tasks may contain sensitive information, so enable Jev routing only when sending task text to TypeSafe is acceptable.
+
+Jev asks separately for the best capability fit and the cheapest adequate fit. Tasks that directly change authentication, authorization, credentials, encryption, payments, privacy boundaries, or destructive data operations use the capability choice; other tasks use the economy choice.
+
+Run `/reload` or restart Pi after changing the configuration.
 
 ### `allowCrossProvider`
 
@@ -71,6 +115,18 @@ Maximum delegation depth. The root session is depth `0`; its direct children are
 
 Children below the limit can spawn their own children. At the limit, `subagent` and `subagent_message` are removed from the child's active tools.
 
+### `childExtensions`
+
+Optional Pi extension sources loaded explicitly in child sessions, using the same package or path syntax as Pi's `--extension` option. Ordinary extension discovery remains disabled.
+
+```json
+{
+  "childExtensions": ["npm:@arhen/pi-core-tps-stats"]
+}
+```
+
+Default: `[]`.
+
 ### `modelHints`
 
 Optional routing guidance keyed by an exact model selector:
@@ -87,6 +143,8 @@ Each model hint supports:
 | `costTier` | `"free"`, `"low"`, `"medium"`, `"high"` | Fallback cost classification when Pi has no non-zero model pricing. |
 | `bestFor` | Array of non-empty strings | Tasks suited to the model. |
 | `avoidFor` | Array of non-empty strings | Tasks that should use another model. |
+
+Hints guide both parent routing and Jev routing. Without capability hints, Jev only sees the selector, pricing, and supported thinking levels, which is usually not enough to distinguish private or newly released models reliably.
 
 Hints merge by selector and then by field. A project can override one field without replacing the model's other global hints:
 
